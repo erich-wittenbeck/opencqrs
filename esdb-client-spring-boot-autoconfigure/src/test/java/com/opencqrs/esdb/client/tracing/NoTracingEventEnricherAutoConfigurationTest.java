@@ -17,15 +17,6 @@ public class NoTracingEventEnricherAutoConfigurationTest {
     private final ApplicationContextRunner runner = new ApplicationContextRunner();
 
     @Test
-    public void otelTracingEventEnricherUsed() {
-        runner.withConfiguration(AutoConfigurations.of(OpenTelemetryEventEnricherAutoConfiguration.class))
-                .withBean(OpenTelemetry.class, NoTracingEventEnricherAutoConfigurationTest::mockOtel)
-                .run(context -> {
-                    assertThat(context).hasNotFailed().hasSingleBean(OpenTelemetryTracingEventEnricher.class);
-                });
-    }
-
-    @Test
     public void noTracingEventEnricherUsed() {
         runner.withConfiguration(AutoConfigurations.of(NoTracingEventEnricherAutoConfiguration.class))
                 .withClassLoader(new FilteredClassLoader(OpenTelemetry.class, OpenTelemetryAutoConfiguration.class))
@@ -34,7 +25,18 @@ public class NoTracingEventEnricherAutoConfigurationTest {
                 });
     }
 
-    private static OpenTelemetry mockOtel() {
-        return mock(OpenTelemetry.class, Mockito.RETURNS_DEEP_STUBS);
+    @Test
+    public void otherTracingEventEnricherFoundAndUsed() {
+        runner.withConfiguration(AutoConfigurations.of(OpenTelemetryEventEnricherAutoConfiguration.class))
+                .withClassLoader(new FilteredClassLoader(OpenTelemetry.class, OpenTelemetryAutoConfiguration.class))
+                .withBean(
+                        TracingEventEnricher.class, NoTracingEventEnricherAutoConfigurationTest::mockOtherEventEnricher)
+                .run(context -> {
+                    assertThat(context).hasNotFailed().doesNotHaveBean(NoTracingEventEnricher.class);
+                });
+    }
+
+    private static TracingEventEnricher mockOtherEventEnricher() {
+        return mock(TracingEventEnricher.class, Mockito.RETURNS_DEEP_STUBS);
     }
 }
