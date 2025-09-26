@@ -42,33 +42,4 @@ public record Event(
         @NotBlank String predecessorHash,
         String traceParent,
         String traceState)
-        implements Marshaller.ResponseElement {
-
-    /**
-     * Convenience constructor with no tracing information available.
-     *
-     * @param source
-     * @param subject
-     * @param type
-     * @param data
-     * @param specVersion
-     * @param id
-     * @param time
-     * @param dataContentType
-     * @param hash
-     * @param predecessorHash
-     */
-    public Event(
-            @NotBlank String source,
-            @NotBlank String subject,
-            @NotBlank String type,
-            @NotNull Map<String, ?> data,
-            @NotBlank String specVersion,
-            @NotBlank String id,
-            @NotNull Instant time,
-            @NotBlank String dataContentType,
-            String hash,
-            @NotBlank String predecessorHash) {
-        this(source, subject, type, data, specVersion, id, time, dataContentType, hash, predecessorHash, null, null);
-    }
-}
+        implements Marshaller.ResponseElement {}
