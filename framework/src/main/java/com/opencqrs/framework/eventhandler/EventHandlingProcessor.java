@@ -10,10 +10,13 @@ import com.opencqrs.framework.eventhandler.partitioning.EventSequenceResolver;
 import com.opencqrs.framework.eventhandler.partitioning.PartitionKeyResolver;
 import com.opencqrs.framework.eventhandler.progress.Progress;
 import com.opencqrs.framework.eventhandler.progress.ProgressTracker;
+import com.opencqrs.framework.eventhandler.tracing.EventTracingContextExtractor;
 import com.opencqrs.framework.persistence.EventReader;
 import com.opencqrs.framework.serialization.EventDataMarshaller;
 import com.opencqrs.framework.types.EventTypeResolver;
 import com.opencqrs.framework.upcaster.EventUpcasters;
+import io.opentelemetry.context.Context;
+import io.opentelemetry.context.Scope;
 import java.lang.reflect.UndeclaredThrowableException;
 import java.net.http.HttpRequest;
 import java.util.*;
@@ -52,6 +55,7 @@ public class EventHandlingProcessor implements Runnable {
     private final EventReader eventReader;
     final ProgressTracker progressTracker;
     final EventSequenceResolver eventSequenceResolver;
+    final EventTracingContextExtractor contextExtractor;
     private final PartitionKeyResolver partitionKeyResolver;
     private final List<EventHandlerDefinition> eventHandlerDefinitions;
     final BackOff backoff;
@@ -65,6 +69,7 @@ public class EventHandlingProcessor implements Runnable {
             ProgressTracker progressTracker,
             EventSequenceResolver eventSequenceResolver,
             PartitionKeyResolver partitionKeyResolver,
+            EventTracingContextExtractor contextExtractor,
             List<EventHandlerDefinition> eventHandlerDefinitions,
             BackOff backoff,
             Delayer delayer) {
@@ -89,6 +94,7 @@ public class EventHandlingProcessor implements Runnable {
         this.progressTracker = progressTracker;
         this.eventSequenceResolver = eventSequenceResolver;
         this.partitionKeyResolver = partitionKeyResolver;
+        this.contextExtractor = contextExtractor;
         this.eventHandlerDefinitions = eventHandlerDefinitions;
         this.backoff = backoff;
         this.delayer = delayer;
@@ -116,6 +122,7 @@ public class EventHandlingProcessor implements Runnable {
             ProgressTracker progressTracker,
             EventSequenceResolver eventSequenceResolver,
             PartitionKeyResolver partitionKeyResolver,
+            EventTracingContextExtractor contextExtractor,
             List<EventHandlerDefinition> eventHandlerDefinitions,
             BackOff backoff) {
         this(
@@ -126,6 +133,7 @@ public class EventHandlingProcessor implements Runnable {
                 progressTracker,
                 eventSequenceResolver,
                 partitionKeyResolver,
+                contextExtractor,
                 eventHandlerDefinitions,
                 backoff,
                 Thread::sleep);
@@ -232,60 +240,68 @@ public class EventHandlingProcessor implements Runnable {
                                                                             ignored -> true;
                                                                 };
                                                         if (rawEventRelevant) {
-                                                            rawCallback.upcast((upcastedCallback, upcasted) ->
-                                                                    upcastedCallback.convert((metadata, event) -> {
-                                                                        var convertedEventRelevant =
-                                                                                switch (eventSequenceResolver) {
-                                                                                    case EventSequenceResolver
-                                                                                                    .ForRawEvent
-                                                                                            ignored -> true;
-                                                                                    case EventSequenceResolver
-                                                                                                    .ForObjectAndMetaDataAndRawEvent
-                                                                                            esr ->
-                                                                                        partitionKeyResolver.resolve(
-                                                                                                        esr
-                                                                                                                .sequenceIdFor(
-                                                                                                                        event,
-                                                                                                                        metadata))
-                                                                                                == partition;
-                                                                                };
-                                                                        if (convertedEventRelevant) {
-                                                                            eventHandlerDefinitions.stream()
-                                                                                    .filter(
-                                                                                            ehd -> ehd.eventClass()
-                                                                                                    .isAssignableFrom(
-                                                                                                            upcastedCallback
-                                                                                                                    .getEventJavaClass()))
-                                                                                    .forEach(ehd -> {
-                                                                                        try {
-                                                                                            switch (ehd.handler()) {
-                                                                                                case EventHandler
-                                                                                                                .ForObject
-                                                                                                        handler ->
-                                                                                                    handler.handle(
-                                                                                                            event);
-                                                                                                case EventHandler
-                                                                                                                .ForObjectAndMetaData
-                                                                                                        handler ->
-                                                                                                    handler.handle(
-                                                                                                            event,
-                                                                                                            metadata);
-                                                                                                case EventHandler
-                                                                                                                .ForObjectAndMetaDataAndRawEvent
-                                                                                                        handler ->
-                                                                                                    handler.handle(
-                                                                                                            event,
-                                                                                                            metadata,
-                                                                                                            raw);
+                                                            // TODO: use (and rename) Scope object to start and stop
+                                                            // span
+                                                            try (Scope ignored1 =
+                                                                    contextExtractor.extractAndRestoreContextFromEvent(
+                                                                            Context.current(), raw)) {
+                                                                rawCallback.upcast((upcastedCallback, upcasted) ->
+                                                                        upcastedCallback.convert((metadata, event) -> {
+                                                                            var convertedEventRelevant =
+                                                                                    switch (eventSequenceResolver) {
+                                                                                        case EventSequenceResolver
+                                                                                                        .ForRawEvent
+                                                                                                ignored -> true;
+                                                                                        case EventSequenceResolver
+                                                                                                        .ForObjectAndMetaDataAndRawEvent
+                                                                                                esr ->
+                                                                                            partitionKeyResolver
+                                                                                                            .resolve(
+                                                                                                                    esr
+                                                                                                                            .sequenceIdFor(
+                                                                                                                                    event,
+                                                                                                                                    metadata))
+                                                                                                    == partition;
+                                                                                    };
+                                                                            if (convertedEventRelevant) {
+                                                                                eventHandlerDefinitions.stream()
+                                                                                        .filter(
+                                                                                                ehd -> ehd.eventClass()
+                                                                                                        .isAssignableFrom(
+                                                                                                                upcastedCallback
+                                                                                                                        .getEventJavaClass()))
+                                                                                        .forEach(ehd -> {
+                                                                                            try {
+                                                                                                switch (ehd.handler()) {
+                                                                                                    case EventHandler
+                                                                                                                    .ForObject
+                                                                                                            handler ->
+                                                                                                        handler.handle(
+                                                                                                                event);
+                                                                                                    case EventHandler
+                                                                                                                    .ForObjectAndMetaData
+                                                                                                            handler ->
+                                                                                                        handler.handle(
+                                                                                                                event,
+                                                                                                                metadata);
+                                                                                                    case EventHandler
+                                                                                                                    .ForObjectAndMetaDataAndRawEvent
+                                                                                                            handler ->
+                                                                                                        handler.handle(
+                                                                                                                event,
+                                                                                                                metadata,
+                                                                                                                raw);
+                                                                                                }
+                                                                                            } catch (Error
+                                                                                                    | RuntimeException
+                                                                                                            e) {
+                                                                                                throw new WrappedEventHandlingException(
+                                                                                                        raw, e);
                                                                                             }
-                                                                                        } catch (Error
-                                                                                                | RuntimeException e) {
-                                                                                            throw new WrappedEventHandlingException(
-                                                                                                    raw, e);
-                                                                                        }
-                                                                                    });
-                                                                        }
-                                                                    }));
+                                                                                        });
+                                                                            }
+                                                                        }));
+                                                            }
                                                         }
 
                                                         if (retryHandler.isRetryExecution()) {
